@@ -6,7 +6,7 @@ The implementation is inspired from:-
 1. https://gluon.mxnet.io/chapter18_variational-methods-and-uncertainty/bayes-by-backprop.html, and
 2. https://github.com/christegho/bnn-mnist.git
 (@christegho : I request you to please have a look and point out any mistakes.
-I felt your implementation used log_likelihood of a gaussian pdf instead of a categorical pdf for labels, which seemed inappropriate to me)
+I felt your implementation used log_likelihood of a gaussian pdf instead of a categorical pdf for labels, which seems inappropriate.)
 
 Implementation does not use OOP principles as the objective here is to have a basic understandable and functional code for the algorithm.
 The MNIST dataset is used as in the paper. Although implementation 1. (above) suggests that n_samples parameter=1 works, 
