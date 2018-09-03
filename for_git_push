@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Aug  6 14:18:57 2018
+
+@author: ta2909
+"""
+
+import os
+import numpy as np
+from matplotlib import pyplot as plt
+from keras.datasets import mnist
+from keras.utils import np_utils
+from numpy.random import seed as np_seed
+from tensorflow import set_random_seed as tf_seed
+import tensorflow as tf
+import time
+
+# In[Helpers]
+    
+def nonlinearity(x):
+    return tf.nn.relu(x)
+
+def log_gaussian(x, mu, sigma):
+    return -0.5 * np.log(2 * np.pi) - tf.log(sigma) - (x - mu) ** 2 / (2 * sigma ** 2)
+
+def get_random(shape, avg, std):
+    return np.random.normal(loc=avg, scale=std,size=shape)
+
+def log_categ(y, y_hat):
+    # First handle very small values in y_hat
+    ll=1e-8;ul=1
+    y_hat=tf.clip_by_value(y_hat,clip_value_min=ll,clip_value_max=ul)
+    return tf.reduce_sum(tf.multiply(y,tf.log(y_hat)),axis=1)
+
+# In[Load Data]
+    
+config = {
+    "num_hidden_layers": 2,
+    "num_hidden_units": 400,
+    "batch_size": 128,
+    "epochs": 2,
+    "learning_rate": 0.001,
+    "num_samples": 5,
+    "pi": 0.25,
+    "sigma_p": 1.0,
+    "sigma_p1": 0.75,
+    "sigma_p2": 0.1,
+    "rho_prior": -3.0
+}
+
+# load data
+(X_train, y_train), (X_test, y_test) = mnist.load_data()
+
+# flatten 28*28 images to a 784 vector for each image
+num_pixels = X_train.shape[1] * X_train.shape[2]
+X_train = X_train.reshape(X_train.shape[0], num_pixels).astype('float32')
+X_test = X_test.reshape(X_test.shape[0], num_pixels).astype('float32')
+
+
+# normalize inputs from 0-255 to 0~2
+X_train = X_train / 126
+X_test = X_test / 126
+
+
+# one hot encode outputs
+y_train = np_utils.to_categorical(y_train)
+y_test = np_utils.to_categorical(y_test)
+num_classes = y_test.shape[1]
+
+
+num_hlayers = config['num_hidden_layers']
+num_hunits = config['num_hidden_units']
+
+# In[Model]
+
+# for reproducible results
+np_seed(1) #numpy rng
+tf_seed(1) #tf rng
+tf.reset_default_graph() #clear out any past graphs
+
+# inputs
+
+x = tf.placeholder(tf.float32, shape = (None,784), name = 'X')
+y = tf.placeholder(tf.float32, shape = (None,10), name = 'Y')
+n_input = X_train.shape[1]
+M = X_train.shape[0]
+
+sigma_prior=config['sigma_p']
+
+n_samples = config['num_samples']
+learning_rate = config['learning_rate']
+
+
+stddev_var = 0.1 #changed 1 to 0.1 using mxnet example values
+rho_prior=config['rho_prior']
+
+# weights
+
+# L1
+with tf.name_scope('params_layer_1'):
+    n_hidden_1 = num_hunits
+    W1_mu = tf.Variable(tf.truncated_normal([n_input, n_hidden_1],mean=0., stddev=stddev_var),name='W1_mu')
+    W1_rho = tf.Variable(tf.constant(rho_prior,shape=[n_input, n_hidden_1]),name='W1_rho') 
+    b1_mu = tf.Variable(tf.truncated_normal([n_hidden_1],mean=0., stddev=stddev_var),name='b1_mu')
+    b1_rho = tf.Variable(tf.constant(rho_prior,shape=[n_hidden_1]),name='b1_rho')
+
+
+
+# L2
+with tf.name_scope('params_layer_2'):
+    n_hidden_2 = num_hunits
+    W2_mu = tf.Variable(tf.truncated_normal([n_hidden_1, n_hidden_2],mean=0., stddev=stddev_var),name='W2_mu')
+    W2_rho =tf.Variable(tf.constant(rho_prior,shape=[n_hidden_1, n_hidden_2]),name='W2_rho')
+    b2_mu = tf.Variable(tf.truncated_normal([n_hidden_2],mean=0., stddev=stddev_var),name='b2_mu')
+    b2_rho = tf.Variable(tf.constant(rho_prior,shape=[n_hidden_2]),name='b2_rho')
+
+
+# L3
+with tf.name_scope('params_final_layer'):
+    n_output = 10
+    W3_mu = tf.Variable(tf.truncated_normal([n_hidden_2, n_output],mean=0., stddev=stddev_var),name='W3_mu')
+    W3_rho = tf.Variable(tf.constant(rho_prior,shape=[n_hidden_2, n_output]),name='W3_rho') 
+    b3_mu = tf.Variable(tf.truncated_normal([n_output],mean=0., stddev=stddev_var),name='b3_mu')
+    b3_rho = tf.Variable(tf.constant(rho_prior,shape=[n_output]),name='b3_rho')
+
+
+#Building the objective
+log_pw, log_qw, log_likelihood = 0., 0., 0.
+
+for _ in range(n_samples):
+    
+    # Step 1
+    epsilon_w1 = get_random((n_input, n_hidden_1), avg=0., std=1.)
+    epsilon_b1 = get_random((n_hidden_1,), avg=0., std=1.)
+    epsilon_w2 = get_random((n_hidden_1, n_hidden_2), avg=0., std=1.)
+    epsilon_b2 = get_random((n_hidden_2,), avg=0., std=1.)
+    epsilon_w3 = get_random((n_hidden_2, n_output), avg=0., std=1.)
+    epsilon_b3 = get_random((n_output,), avg=0., std=1.)
+    
+    
+
+    # Step 2
+    with tf.name_scope('weights_layer_1'):
+        W1 = W1_mu + tf.multiply(tf.log(1. + tf.exp(W1_rho)), epsilon_w1)
+        b1 = b1_mu + tf.multiply(tf.log(1. + tf.exp(b1_rho)), epsilon_b1)
+        tf.summary.histogram("w1",W1);tf.summary.histogram("B1",b1);
+    with tf.name_scope('weights_layer_2'):
+        W2 = W2_mu + tf.multiply(tf.log(1. + tf.exp(W2_rho)), epsilon_w2)
+        b2 = b2_mu + tf.multiply(tf.log(1. + tf.exp(b2_rho)), epsilon_b2)
+        tf.summary.histogram("w2",W2);tf.summary.histogram("B2",b2);
+        
+    with tf.name_scope('weights_layer_3'):
+        W3 = W3_mu + tf.multiply(tf.log(1. + tf.exp(W3_rho)), epsilon_w3)
+        b3 = b3_mu + tf.multiply(tf.log(1. + tf.exp(b3_rho)), epsilon_b3)
+        tf.summary.histogram("w3",W3);tf.summary.histogram("B3",b3);
+        
+    # Typical NN calculations
+    with tf.name_scope('Training_network'):
+        a1 = tf.nn.relu(tf.matmul(x, W1) + b1)
+        a2 = tf.nn.relu(tf.matmul(a1, W2) + b2)
+        y_hat = tf.nn.softmax(tf.matmul(a2, W3) + b3)
+        tf.summary.histogram("a2",a2);tf.summary.histogram("a3",y_hat);
+        
+    with tf.name_scope('sample_loss_calc'):
+        sample_log_pw, sample_log_qw, sample_log_likelihood = 0., 0., 0.
+    
+        list_weights=[(W1, b1, W1_mu, W1_rho, b1_mu, b1_rho),(W2, b2, W2_mu,\
+                      W2_rho, b2_mu, b2_rho),\
+                      (W3, b3, W3_mu, W3_rho, b3_mu, b3_rho)]
+        
+        for k in range(len(list_weights)):
+            W, b, W_mu, W_rho, b_mu, b_rho=list_weights[k]
+    
+            # first weight prior
+            sample_log_pw += tf.reduce_sum(log_gaussian(W, 0., sigma_prior))
+            sample_log_pw += tf.reduce_sum(log_gaussian(b, 0., sigma_prior))
+    
+            # then approximation
+            sample_log_qw += tf.reduce_sum(log_gaussian(W, W_mu, tf.log\
+                                                        (1. + tf.exp(W_rho))))
+            sample_log_qw += tf.reduce_sum(log_gaussian(b, b_mu, tf.log\
+                                                        (1. + tf.exp(b_rho))))
+    
+        # then the likelihood
+        sample_log_likelihood =tf.reduce_sum(log_categ(y, y_hat))
+
+    with tf.name_scope('total_loss'):
+        log_pw += sample_log_pw
+        log_qw += sample_log_qw
+        log_likelihood += sample_log_likelihood
+        
+
+
+N=X_train.shape[0];
+batch_size = 128
+n_batches = N // float(batch_size)
+n_train_batches = int(X_train.shape[0] / float(batch_size))
+pi = (1. / n_batches)
+
+with tf.name_scope('Expected_loss'):
+    log_qw /= n_samples;log_pw /= n_samples;log_likelihood /= n_samples
+    objective = pi * (log_qw - log_pw) - log_likelihood #/ float(batch_size)
+    tf.summary.scalar('-log_likelihood',log_likelihood)
+    tf.summary.scalar('-log_qw',log_qw)
+    tf.summary.scalar('-log_pw',log_pw)
+    tf.summary.scalar('Loss',objective)
+
+# updates
+with tf.name_scope('Training'):
+    optimizer = tf.train.AdamOptimizer(learning_rate)
+    optimize = optimizer.minimize(objective)
+
+with tf.name_scope('Prediction_network'):
+    a1_mu = nonlinearity(tf.matmul(x, W1_mu) + b1_mu)
+    a2_mu = nonlinearity(tf.matmul(a1_mu, W2_mu) + b2_mu)
+    y_hat_mu = tf.nn.softmax((tf.matmul(a2_mu, W3_mu) + b3_mu))
+    pred = tf.argmax(y_hat_mu, 1)
+
+with tf.name_scope('Train_Accuracy'):
+    acc = tf.reduce_mean(tf.cast(tf.equal(pred,tf.argmax(y,axis=1)),tf.float32))
+    tf.summary.scalar('train_Accuracy',acc)
+
+merged_summaries=tf.summary.merge_all()
+
+# In[Prepare for launch]
+
+loss_list=[];elist=[];train_err_list=[];test_err_list=[];
+
+model_name = "model1"
+model_save_path = ".\model"
+if not os.path.isdir(model_save_path):
+    os.makedirs(model_save_path)
+model_path=os.path.join(model_save_path, model_name)
+
+n_epochs = config["epochs"]
+
+# Create a saver object for saving the model
+saver=tf.train.Saver(max_to_keep=4)
+start_time = time.time()
+
+#configure Session for GPU
+train_config=tf.ConfigProto(device_count={'GPU':1,'CPU':1},log_device_placement=True)
+
+# In[Train Loop]
+
+sess = tf.Session(config=train_config)
+init = tf.global_variables_initializer()
+sess.run(init)
+
+
+# write logs to disk
+writer=tf.summary.FileWriter('./tf_graphs/2')
+writer.add_graph(sess.graph)
+
+# Training loop
+
+#make figure for plotting loss
+
+ini_epoch=len(elist)
+plt.ion();fig = plt.figure();
+ax1 = fig.add_subplot(211);plt.title('Training Loss')
+plt.xlabel('Epoch');plt.ylabel('KL');plt.grid(True)
+ax2 = fig.add_subplot(212,sharex=ax1);plt.title('Error')
+plt.xlabel('Epoch');plt.ylabel('Error (%)');plt.grid(True)
+for n in range(n_epochs):
+    errs = [];#weightVar = []
+    for i in range(n_train_batches):
+        ob = sess.run([objective, optimize, W2_rho,sample_log_likelihood,acc,\
+                       log_qw,log_pw,log_likelihood], feed_dict={            
+            x: X_train[i * batch_size: (i + 1) * batch_size],
+            y: y_train[i * batch_size: (i + 1) * batch_size]})
+
+    test_acc = sess.run(acc, feed_dict={x: X_test, y: y_test})
+    elapsed_time = time.time() - start_time
+    start_time = time.time()
+    print("Epoch={}, loss={},train_acc={}, test_acc={}, time this epoch={} s."\
+          .format(n,ob[0],ob[4],test_acc,elapsed_time/1)) #, np.mean(weightVar)
+
+    loss_list=loss_list+[ob[0]];elist=elist+[n+ini_epoch]
+    train_err_list=train_err_list+[100*(1-ob[4])]
+    test_err_list=test_err_list+[100*(1-test_acc)]
+    ax1.plot(elist,loss_list,'b')
+    ax2.plot(elist,train_err_list,'b--',elist,test_err_list,'r--')
+    ax2.legend(['Train','Test']);
+    fig.canvas.draw();plt.pause(0.05)
+    
+saver.save(sess, model_path, global_step=n)
+
+
+#sess.close()
+
+# In[Restore and Test]
+
+tf.reset_default_graph() #clear out any past graphs
+
+sess_test=tf.Session()
+
+# Restore graph then weights
+new_saver = tf.train.import_meta_graph(model_path+'-{}.meta'.format(n))
+new_saver.restore(sess_test, model_path+'-{}'.format(n))
+
+writer=tf.summary.FileWriter('./tf_graphs/2')
+writer.add_graph(sess.graph)
+
+num_vars=np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
+print('total no. of learnable parameters in the model are {}'.format(num_vars))
+
+# Access and create placeholders variables and
+# create feed-dict to feed new data
+ 
+graph = tf.get_default_graph()
+x = graph.get_tensor_by_name("X:0")
+y = graph.get_tensor_by_name("Y:0")
+acc= graph.get_tensor_by_name("Train_Accuracy/Mean:0")
+#w2 = graph.get_tensor_by_name("y:0")
+#feed_dict ={w1:13.0,w2:17.0}
+
+#see original test acc using the prediction network based on mus
+test_acc = sess_test.run(acc, feed_dict={x: X_test, y: y_test})
+print('The original test acc is {}'.format(test_acc))
+
+# In[Weight Pruning]
+
+perc=75 #percentage weights to remove
+
+scope_list=['params_layer_1','params_layer_2','params_final_layer']
+param_list=['W{}_mu:0','W{}_rho:0','b{}_mu:0','b{}_rho:0']
+#Now, access the weights that you want to run. 
+for i in range(len(scope_list)):
+    w_mu = [v for v in tf.global_variables() if v.name == scope_list[i]+'/'+param_list[0].format(i+1)][0]
+    w_rho = [v for v in tf.global_variables() if v.name == scope_list[i]+'/'+param_list[1].format(i+1)][0]
+    b_mu = [v for v in tf.global_variables() if v.name == scope_list[i]+'/'+param_list[2].format(i+1)][0]
+    b_rho = [v for v in tf.global_variables() if v.name == scope_list[i]+'/'+param_list[3].format(i+1)][0]
+
+    # get param values as numpy arrays
+    w_mu_np=sess_test.run(w_mu)
+    w_rho_np=sess_test.run(w_rho)
+    b_mu_np=sess_test.run(b_mu)
+    b_rho_np=sess_test.run(b_rho)
+
+    # find SNR and zero out bottom perc% using tf.assign on mu's
+    SNR_w=np.abs(w_mu_np)/(np.log(1. + np.exp(w_rho_np)))
+    SNR_b=np.abs(b_mu_np)/(np.log(1. + np.exp(b_rho_np)))
+    perc_w=np.nanpercentile(SNR_w,perc)
+    perc_b=np.nanpercentile(SNR_b,perc)
+    w_mu_np[SNR_w<perc_w]=0
+    b_mu_np[SNR_b<perc_b]=0
+    
+    w_mu.assign(w_mu_np).eval(session=sess_test)
+    b_mu.assign(b_mu_np).eval(session=sess_test)
+    w_mu_np1=sess_test.run(w_mu)
+    
+#see change in test acc using the prediction network based on mus
+test_acc = sess_test.run(acc, feed_dict={x: X_test, y: y_test})
+print('The new test acc is {}'.format(test_acc))
+
+#sess_test.close()
